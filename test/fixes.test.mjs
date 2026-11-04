@@ -49,7 +49,7 @@ test('converter does not get stuck "busy" when its temp folder cannot be made', 
 
 test('removing S&S settings goes back to sample garments', async () => {
   config.dataDir = path.join(tmp, 'data');
-  await writeFile(path.join(config.dataDir, 'catalog.json'), JSON.stringify({ source: 'ss', syncedAt: new Date().toISOString(), styles: [] }));
+  await writeFile(path.join(config.dataDir, 'catalog.json'), JSON.stringify({ source: 'ss', syncedAt: new Date().toISOString(), styles: [{ id: 'ss-1', styleID: '1', colors: [] }] }));
   Object.assign(config.ss, { account: '123', apiKey: 'k', styles: ['Gildan 5000'] });
   assert.equal((await getCatalog()).source, 'ss');
   Object.assign(config.ss, { account: '', apiKey: '', styles: [] });

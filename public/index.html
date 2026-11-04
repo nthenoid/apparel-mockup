@@ -36,6 +36,15 @@
       <section class="group" aria-labelledby="h-garment">
         <h2 id="h-garment">Garment</h2>
         <label class="field"><span>Style</span><select id="style"></select></label>
+        <div id="ssAdd" class="find" hidden>
+          <label class="field"><span>Add a style from S&amp;S</span>
+            <input id="styleSearch" type="search" placeholder="Brand, style number or name" autocomplete="off" spellcheck="false">
+          </label>
+          <p id="searchNote" class="info" hidden></p>
+          <ul id="searchResults" class="results" hidden></ul>
+          <ul id="jobs" class="jobs"></ul>
+        </div>
+        <button type="button" id="removeStyle" class="link" hidden>Remove this style</button>
         <div class="field">
           <span id="colorLabel">Color <b id="colorName"></b></span>
           <div id="swatches" class="swatches" role="radiogroup" aria-labelledby="colorLabel"></div>

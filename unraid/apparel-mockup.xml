@@ -15,7 +15,7 @@
   <Config Name="Cloudflare Access AUD tag" Target="ACCESS_AUD" Default="" Description="From the Access application's Overview page." Type="Variable" Display="always" Required="true" Mask="true"></Config>
   <Config Name="S&amp;S account number" Target="SS_ACCOUNT" Default="" Description="Leave blank to use sample garments." Type="Variable" Display="always" Required="false" Mask="false"></Config>
   <Config Name="S&amp;S API key" Target="SS_API_KEY" Default="" Description="From your S&amp;S account page." Type="Variable" Display="always" Required="false" Mask="true"></Config>
-  <Config Name="S&amp;S styles" Target="SS_STYLES" Default="Gildan 5000,Gildan 18500,BELLA+CANVAS 3001" Description="Comma-separated brand and style, or S&amp;S style IDs." Type="Variable" Display="always" Required="false" Mask="false">Gildan 5000,Gildan 18500,BELLA+CANVAS 3001</Config>
+  <Config Name="S&amp;S styles" Target="SS_STYLES" Default="Gildan 5000,Gildan 18500,BELLA+CANVAS 3001" Description="Optional starting list, loaded the first time only. Add and remove styles from inside the tool after that." Type="Variable" Display="advanced" Required="false" Mask="false">Gildan 5000,Gildan 18500,BELLA+CANVAS 3001</Config>
   <Config Name="Nightly sync hour" Target="SYNC_HOUR" Default="2" Description="Hour of the day (0-23) to refresh S&amp;S data." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
   <Config Name="Max print width (in)" Target="MAX_PRINT_WIDTH_IN" Default="13" Type="Variable" Display="advanced" Required="false" Mask="false">13</Config>
   <Config Name="Max print height (in)" Target="MAX_PRINT_HEIGHT_IN" Default="16" Type="Variable" Display="advanced" Required="false" Mask="false">16</Config>

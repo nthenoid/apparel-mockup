@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, assertConfig, ssEnabled } from './config.js';
 import { createAccessGuard } from './access.js';
-import { getCatalog, getStatus, startSyncSchedule } from './catalog.js';
+import { getCatalog, getStatus, startSyncSchedule, searchStyles, addStyle, removeStyle, listJobs } from './catalog.js';
 import { convertVector, UserError } from './convert.js';
 import { demoSvg } from './demo.js';
 import { readOverrides, applyOverride } from './overrides.js';
@@ -59,6 +59,21 @@ function readBody(req, limitBytes) {
   });
 }
 
+// JSON bodies only: browsers won't send this content type cross-site without
+// asking first, which keeps other websites from making changes here.
+async function readJson(req) {
+  if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw new UserError('Expected JSON.', 415);
+  const body = await readBody(req, 16 * 1024);
+  let parsed;
+  try {
+    parsed = JSON.parse(body.toString('utf8'));
+  } catch {
+    throw new UserError('Expected JSON.');
+  }
+  if (!parsed || typeof parsed !== 'object') throw new UserError('Expected a JSON object.');
+  return parsed;
+}
+
 async function serveFile(res, root, rel, cache) {
   const full = path.resolve(root, '.' + path.posix.normalize('/' + rel));
   if (!full.startsWith(root + path.sep)) return send(res, 404, 'Not found');
@@ -103,17 +118,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && p === '/api/catalog') return json(res, 200, await getCatalog());
     if (req.method === 'GET' && p === '/api/overrides') return json(res, 200, await readOverrides());
 
-    if (req.method === 'POST' && p === '/api/overrides') {
-      if (!String(req.headers['content-type'] || '').startsWith('application/json')) throw new UserError('Expected JSON.', 415);
-      const body = await readBody(req, 16 * 1024);
-      let parsed;
-      try {
-        parsed = JSON.parse(body.toString('utf8'));
-      } catch {
-        throw new UserError('Expected JSON.');
-      }
-      return json(res, 200, await applyOverride(parsed));
-    }
+    if (req.method === 'POST' && p === '/api/overrides') return json(res, 200, await applyOverride(await readJson(req)));
+
+    if (req.method === 'GET' && p === '/api/styles/search') return json(res, 200, { results: await searchStyles(url.searchParams.get('q')) });
+    if (req.method === 'GET' && p === '/api/styles/jobs') return json(res, 200, { jobs: listJobs() });
+    if (req.method === 'POST' && p === '/api/styles/add') return json(res, 202, await addStyle((await readJson(req)).styleID));
+    if (req.method === 'POST' && p === '/api/styles/remove') return json(res, 200, await removeStyle((await readJson(req)).id));
 
     if (req.method === 'POST' && p === '/api/convert') {
       const body = await readBody(req, config.maxUploadMb * 1024 * 1024);

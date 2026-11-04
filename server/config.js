@@ -11,8 +11,10 @@ export const config = {
     apiKey: (env.SS_API_KEY || '').trim(),
     apiBase: (env.SS_API_BASE || 'https://api.ssactivewear.com/v2').replace(/\/+$/, ''),
     imageBase: (env.SS_IMAGE_BASE || 'https://www.ssactivewear.com').replace(/\/+$/, ''),
-    // Comma-separated list: "Gildan 5000, BELLA+CANVAS 3001" or S&S style IDs.
+    // Optional starting list, loaded the first time only: "Gildan 5000, BELLA+CANVAS 3001"
+    // or S&S style IDs. After that, add and remove styles from inside the tool.
     styles: (env.SS_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean),
+    requestGapMs: num(env.SS_REQUEST_GAP_MS, 1100),
   },
   syncHour: Math.min(23, Math.max(0, num(env.SYNC_HOUR, 2))),
   access: {
@@ -26,7 +28,7 @@ export const config = {
 };
 
 export function ssEnabled() {
-  return Boolean(config.ss.account && config.ss.apiKey && config.ss.styles.length);
+  return Boolean(config.ss.account && config.ss.apiKey);
 }
 
 // Fail closed: the server refuses to start without Cloudflare Access settings

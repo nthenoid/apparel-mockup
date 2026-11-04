@@ -80,10 +80,15 @@ Open `https://mockups.yourbusiness.com`. You should get the Access login, then t
 ## 6. Connect S&S Activewear
 
 1. Get your API key from the account page on ssactivewear.com. Your account number is the username.
-2. In the container settings, fill in the account number, API key and **S&S styles**. List the styles you use, separated by commas, as brand and style name (`Gildan 5000, BELLA+CANVAS 3001`) or S&S style IDs. Spacing and punctuation don't matter.
-3. Apply. The first sync starts right away and then runs nightly at the hour you set. Garment images are saved to the data folder, so the tool doesn't call S&S while you work.
+2. In the container settings, fill in the account number and API key, then click Apply.
+3. In the tool, under **Style**, type in **Add a style from S&S**: a brand and style number (`Gildan 5000`), a style number alone, or words from the name (`hooded`). Click **Add** next to the one you want. Its photos and size chart download once (a minute or two for a style with many colors) and stay saved on the server.
+4. To drop a style you no longer use, select it and click **Remove this style**. You can add it back any time.
 
-The header of the tool shows when the catalog was last updated and lists any style names S&S didn't recognize.
+Every night at the hour you set, the tool refreshes the styles you've added (new colors, updated photos). It doesn't call S&S while you work.
+
+**S&S styles** in the container settings is optional: a comma-separated starting list (`Gildan 5000, BELLA+CANVAS 3001`) that's loaded the first time only. After that, the list in the tool is what counts.
+
+The header of the tool shows how many styles you have, when they were last refreshed, and any starting-list names S&S didn't recognize.
 
 The tool only reads from S&S. It has no code for orders, so the key can't be used to place one through this tool.
 

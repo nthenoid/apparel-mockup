@@ -1,33 +1,73 @@
-// Pulls the styles you list in SS_STYLES from S&S Activewear, caches their
-// images on disk, and keeps a local catalog.json. Only read (GET) requests are
-// ever made: this code has no way to place orders.
+// Your garment library. You search S&S from inside the tool and add the styles
+// you want; each one's photos and size chart are downloaded once and kept in
+// catalog.json. The nightly sync refreshes only the styles you've added.
+// Only read (GET) requests are ever made to S&S: this code can't place orders.
 import { mkdir, readFile, writeFile, rename, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { config, ssEnabled } from './config.js';
 import { demoCatalog } from './demo.js';
+import { UserError } from './convert.js';
 
 const status = { state: 'idle', lastSync: null, lastError: null, unmatched: [], styleCount: 0 };
-let catalog = null;
+let catalog = null; // { source: 'ss', syncedAt, seeded, styles: [] }
+let styleIndex = null; // { fetchedAt, styles: [every S&S style, slimmed] }
+let indexLoading = null;
+let queue = Promise.resolve();
+const jobs = new Map(); // styleID -> { styleID, brand, name, state: 'adding' | 'error', error, at }
 
+const DAY = 24 * 3600 * 1000;
+const MAX_ADDING = 3;
 const catalogFile = () => path.join(config.dataDir, 'catalog.json');
+const indexFile = () => path.join(config.dataDir, 'ss-styles.json');
 const imageDir = () => path.join(config.dataDir, 'images', 'ss');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const sid = (style) => String(style.styleID ?? String(style.id || '').replace(/^ss-/, ''));
+const byName = (a, b) => `${a.brand} ${a.name}`.localeCompare(`${b.brand} ${b.name}`, undefined, { numeric: true });
 
-export function getStatus() {
-  return { ...status, source: catalog?.source || 'demo' };
+async function writeJson(file, data) {
+  await mkdir(config.dataDir, { recursive: true });
+  await writeFile(`${file}.tmp`, JSON.stringify(data));
+  await rename(`${file}.tmp`, file);
 }
 
-export async function getCatalog() {
-  // Without S&S settings, always show the samples, even if an old catalog.json is on disk.
-  if (!ssEnabled()) return { source: 'demo', styles: demoCatalog() };
+async function loadCatalog() {
   if (catalog) return catalog;
   try {
-    catalog = JSON.parse(await readFile(catalogFile(), 'utf8'));
+    const c = JSON.parse(await readFile(catalogFile(), 'utf8'));
+    if (c && Array.isArray(c.styles)) catalog = c;
   } catch {
-    catalog = null;
+    /* no catalog yet */
   }
-  return catalog || { source: 'demo', styles: demoCatalog() };
+  return catalog;
+}
+
+// Every change to the library goes through this queue, so adding a style while
+// the nightly sync runs can't overwrite one or the other.
+function mutateCatalog(change) {
+  const job = queue.then(async () => {
+    const next = structuredClone((await loadCatalog()) || { source: 'ss', styles: [] });
+    change(next);
+    next.styles.sort(byName);
+    await writeJson(catalogFile(), next);
+    catalog = next;
+    status.styleCount = next.styles.length;
+    return next;
+  });
+  queue = job.catch(() => {});
+  return job;
+}
+
+export function getStatus() {
+  return { ...status, source: ssEnabled() && catalog?.styles.length ? 'ss' : 'demo' };
+}
+
+// Sample garments show until S&S is connected and at least one style is added.
+export async function getCatalog() {
+  if (!ssEnabled()) return { source: 'demo', styles: demoCatalog() };
+  const c = await loadCatalog();
+  if (!c || !c.styles.length) return { source: 'demo', styles: demoCatalog() };
+  return c;
 }
 
 // ---------- measurement parsing ----------
@@ -85,6 +125,8 @@ export function specsToSizes(specs, sizeOrder = []) {
 
 // ---------- S&S API ----------
 
+class FatalSSError extends Error {}
+
 async function ssGet(pathAndQuery) {
   const auth = Buffer.from(`${config.ss.account}:${config.ss.apiKey}`).toString('base64');
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -96,13 +138,53 @@ async function ssGet(pathAndQuery) {
       await sleep(15_000 * (attempt + 1));
       continue;
     }
-    if (res.status === 401 || res.status === 403) throw new Error('S&S rejected the account number or API key.');
+    if (res.status === 401 || res.status === 403) throw new FatalSSError('S&S rejected the account number or API key.');
     if (res.status === 404) return [];
     if (!res.ok) throw new Error(`S&S request ${pathAndQuery.split('?')[0]} failed with ${res.status}.`);
-    await sleep(1100); // stay well under the S&S rate limit
+    await sleep(config.ss.requestGapMs); // stay well under the S&S rate limit
     return res.json();
   }
-  throw new Error('S&S rate limit kept rejecting requests. Sync will retry tomorrow.');
+  throw new FatalSSError('S&S is limiting requests right now. Try again in a few minutes.');
+}
+
+// The full list of S&S styles, kept on disk and refreshed at most once a day.
+async function getStyleIndex({ maxAgeMs = DAY } = {}) {
+  if (!styleIndex) {
+    try {
+      styleIndex = JSON.parse(await readFile(indexFile(), 'utf8'));
+    } catch {
+      styleIndex = null;
+    }
+  }
+  if (styleIndex && Date.now() - styleIndex.fetchedAt < maxAgeMs) return styleIndex.styles;
+
+  indexLoading ||= (async () => {
+    const all = await ssGet('/styles/');
+    const styles = (Array.isArray(all) ? all : [])
+      .filter((s) => s && s.styleID != null)
+      .map((s) => ({
+        styleID: String(s.styleID),
+        partNumber: s.partNumber || '',
+        brandName: s.brandName || '',
+        styleName: s.styleName || '',
+        title: s.title || '',
+        baseCategory: s.baseCategory || '',
+        categories: s.categories || '',
+      }));
+    if (!styles.length) throw new Error('S&S returned an empty style list.');
+    styleIndex = { fetchedAt: Date.now(), styles };
+    await writeJson(indexFile(), styleIndex);
+  })().finally(() => {
+    indexLoading = null;
+  });
+
+  try {
+    await indexLoading;
+  } catch (err) {
+    if (styleIndex) return styleIndex.styles; // an old list beats no list
+    throw err;
+  }
+  return styleIndex.styles;
 }
 
 const SAFE_IMAGE = /^Images\/[A-Za-z0-9_./-]+\.(jpe?g|png)$/i;
@@ -115,7 +197,7 @@ async function cacheImage(rel) {
     const local = path.join(imageDir(), file);
     try {
       const s = await stat(local);
-      if (Date.now() - s.mtimeMs < 30 * 24 * 3600 * 1000) return `/img/ss/${file}`;
+      if (Date.now() - s.mtimeMs < 30 * DAY) return `/img/ss/${file}`;
     } catch {
       /* not cached yet */
     }
@@ -135,40 +217,57 @@ async function cacheImage(rel) {
   return null;
 }
 
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 async function buildStyle(s) {
+  await mkdir(imageDir(), { recursive: true });
   const products = await ssGet(`/products/?style=${encodeURIComponent(s.styleID)}`);
   let specs = [];
   try {
     specs = await ssGet(`/specs/?style=${encodeURIComponent(s.styleID)}`);
-  } catch {
+  } catch (err) {
+    if (err instanceof FatalSSError) throw err;
     specs = [];
   }
 
-  const sizeOrder = [...new Map(products.map((p) => [p.sizeName, p.sizeOrder || ''])).entries()]
+  const list = Array.isArray(products) ? products : [];
+  const sizeOrder = [...new Map(list.map((p) => [p.sizeName, p.sizeOrder || ''])).entries()]
     .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
     .map(([n]) => n);
 
   const colors = new Map();
-  for (const p of products) {
+  for (const p of list) {
     if (!p.colorName || colors.has(p.colorName)) continue;
     colors.set(p.colorName, p);
   }
 
-  const out = [];
-  for (const p of colors.values()) {
+  // Several colors download at once so a big style finishes in a minute or two.
+  const built = await mapLimit([...colors.values()], 4, async (p) => {
     const front = await cacheImage(p.colorFrontImage);
-    if (!front) continue;
-    out.push({
+    if (!front) return null;
+    return {
       name: p.colorName,
       hex: /^#[0-9a-f]{6}$/i.test(p.color1 || '') ? p.color1 : null,
       swatch: await cacheImage(p.colorSwatchImage),
       front,
       back: await cacheImage(p.colorBackImage),
-    });
-  }
+    };
+  });
 
   return {
     id: `ss-${s.styleID}`,
+    styleID: String(s.styleID),
     brand: s.brandName,
     name: s.styleName,
     title: s.title || '',
@@ -176,35 +275,167 @@ async function buildStyle(s) {
     depictedSize: null, // the app assumes a default per garment type; override per style in the app
     sizes: specsToSizes(specs, sizeOrder),
     sizeNames: sizeOrder,
-    colors: out,
+    colors: built.filter(Boolean),
   };
+}
+
+function requireSS() {
+  if (!ssEnabled()) throw new UserError('Add your S&S account number and API key in the container settings first.', 409);
+}
+
+async function indexOrUserError() {
+  try {
+    return await getStyleIndex();
+  } catch (err) {
+    throw new UserError(`Couldn’t get the style list from S&S. ${err.message}`, 502);
+  }
+}
+
+// ---------- search, add, remove ----------
+
+export async function searchStyles(query) {
+  requireSS();
+  const q = String(query || '').trim().slice(0, 100);
+  const tokens = q.split(/\s+/).map(norm).filter(Boolean).slice(0, 6);
+  if (!tokens.length) return [];
+  const all = await indexOrUserError();
+  const have = new Set(((await loadCatalog())?.styles || []).map(sid));
+  const key = norm(q);
+  const rank = (s) => {
+    if (s.styleID === q || norm(s.styleName) === key || norm(`${s.brandName}${s.styleName}`) === key || norm(s.partNumber) === key) return 0;
+    if (norm(`${s.brandName}${s.styleName}`).includes(key)) return 1;
+    return 2;
+  };
+  const hits = all.filter((s) => {
+    if (s.styleID === q) return true;
+    // Fields stay separate so numbers can't run together into false matches
+    // ("18500" + "01800" must not match "5000").
+    const hay = [s.brandName, s.styleName, s.partNumber, ...String(s.title).split(/\s+/)].map(norm).join(' ');
+    return tokens.every((t) => hay.includes(t));
+  });
+  hits.sort((a, b) => rank(a) - rank(b) || byName({ brand: a.brandName, name: a.styleName }, { brand: b.brandName, name: b.styleName }));
+  return hits.slice(0, 25).map((s) => ({
+    styleID: s.styleID,
+    brand: s.brandName,
+    name: s.styleName,
+    title: s.title,
+    added: have.has(s.styleID),
+    adding: jobs.get(s.styleID)?.state === 'adding',
+  }));
+}
+
+export function listJobs() {
+  for (const [id, j] of jobs) if (j.state === 'error' && Date.now() - j.at > 10 * 60 * 1000) jobs.delete(id);
+  return [...jobs.values()];
+}
+
+// Starts downloading a style and returns right away; the tool checks back
+// with listJobs() until it's done.
+export async function addStyle(styleID) {
+  requireSS();
+  const id = String(styleID ?? '').trim();
+  if (!/^\d{1,10}$/.test(id)) throw new UserError('Unknown style.');
+  const existing = jobs.get(id);
+  if (existing?.state === 'adding') return existing;
+  if ([...jobs.values()].filter((j) => j.state === 'adding').length >= MAX_ADDING) {
+    throw new UserError(`${MAX_ADDING} styles are already downloading. Try again when one finishes.`, 503);
+  }
+  const all = await indexOrUserError();
+  const s = all.find((x) => x.styleID === id);
+  if (!s) throw new UserError('S&S doesn’t list that style any more.', 404);
+
+  const job = { styleID: id, brand: s.brandName, name: s.styleName, state: 'adding', error: null, at: Date.now() };
+  jobs.set(id, job);
+  // Kept off the JSON the tool sees; tests await it.
+  Object.defineProperty(job, 'done', { enumerable: false, value: (async () => {
+    try {
+      const built = await buildStyle(s);
+      if (!built.colors.length) throw new Error('S&S has no product photos for this style.');
+      await mutateCatalog((c) => {
+        c.styles = c.styles.filter((x) => sid(x) !== id);
+        c.styles.push(built);
+      });
+      jobs.delete(id);
+      console.log(`Added ${s.brandName} ${s.styleName} (${built.colors.length} colors)`);
+    } catch (err) {
+      Object.assign(job, { state: 'error', error: err.message, at: Date.now() });
+      console.error(`Couldn’t add ${s.brandName} ${s.styleName}:`, err.message);
+    }
+  })() });
+  return job;
+}
+
+export async function removeStyle(id) {
+  requireSS();
+  const key = String(id ?? '').replace(/^ss-/, '');
+  if (!/^\d{1,10}$/.test(key)) throw new UserError('Unknown style.');
+  const c = await mutateCatalog((cat) => {
+    cat.styles = cat.styles.filter((x) => sid(x) !== key);
+  });
+  return { removed: key, styleCount: c.styles.length };
+}
+
+// ---------- nightly refresh ----------
+
+function matchWanted(all, wanted) {
+  const key = norm(wanted);
+  return all.find((s) => s.styleID === wanted || norm(`${s.brandName} ${s.styleName}`) === key || (s.partNumber && norm(s.partNumber) === key));
 }
 
 export async function syncNow() {
   if (!ssEnabled() || status.state === 'syncing') return;
   status.state = 'syncing';
   try {
-    await mkdir(imageDir(), { recursive: true });
-    const all = await ssGet('/styles/');
-    const wanted = config.ss.styles;
-    const matched = [];
+    const all = await getStyleIndex({ maxAgeMs: 12 * 3600 * 1000 });
+    const current = await loadCatalog();
+    const ids = (current?.styles || []).map(sid);
+
+    // SS_STYLES is only a starting list, used the very first time.
+    const seedIds = new Set();
     const unmatched = [];
-    for (const w of wanted) {
-      const key = norm(w);
-      const hit = all.find(
-        (s) => String(s.styleID) === w || norm(`${s.brandName} ${s.styleName}`) === key || (s.partNumber && norm(s.partNumber) === key)
-      );
-      if (hit) matched.push(hit);
-      else unmatched.push(w);
+    if (!current?.seeded) {
+      for (const w of config.ss.styles) {
+        const hit = matchWanted(all, w);
+        if (hit) seedIds.add(hit.styleID);
+        else unmatched.push(w);
+      }
     }
-    const styles = [];
-    for (const s of matched) styles.push(await buildStyle(s));
-    const next = { source: 'ss', syncedAt: new Date().toISOString(), styles };
-    await writeFile(`${catalogFile()}.tmp`, JSON.stringify(next));
-    await rename(`${catalogFile()}.tmp`, catalogFile());
-    catalog = next;
-    Object.assign(status, { state: 'idle', lastSync: next.syncedAt, lastError: null, unmatched, styleCount: styles.length });
-    console.log(`S&S sync finished: ${styles.length} styles${unmatched.length ? `, not found: ${unmatched.join(', ')}` : ''}`);
+
+    let failed = 0;
+    for (const id of [...new Set([...ids, ...seedIds])]) {
+      const s = all.find((x) => x.styleID === id);
+      if (!s) continue; // discontinued at S&S: keep what we have
+      let built;
+      try {
+        built = await buildStyle(s);
+      } catch (err) {
+        if (err instanceof FatalSSError) throw err;
+        failed++;
+        continue;
+      }
+      if (!built.colors.length) {
+        failed++;
+        continue;
+      }
+      await mutateCatalog((c) => {
+        const i = c.styles.findIndex((x) => sid(x) === id);
+        if (i >= 0) c.styles[i] = built;
+        else if (seedIds.has(id)) c.styles.push(built); // a style removed during the sync stays removed
+      });
+    }
+
+    const done = await mutateCatalog((c) => {
+      c.seeded = true;
+      c.syncedAt = new Date().toISOString();
+    });
+    Object.assign(status, {
+      state: 'idle',
+      lastSync: done.syncedAt,
+      lastError: failed ? `${failed} style${failed === 1 ? '' : 's'} couldn’t be refreshed and kept their previous data.` : null,
+      unmatched,
+      styleCount: done.styles.length,
+    });
+    console.log(`S&S sync finished: ${done.styles.length} styles${unmatched.length ? `, not found: ${unmatched.join(', ')}` : ''}`);
   } catch (err) {
     Object.assign(status, { state: 'error', lastError: err.message });
     console.error('S&S sync failed:', err.message);
@@ -216,12 +447,12 @@ export async function startSyncSchedule() {
     console.log('S&S not configured: showing sample garments.');
     return;
   }
-  const existing = await getCatalog();
-  if (existing.source === 'ss') {
-    status.lastSync = existing.syncedAt;
+  const existing = await loadCatalog();
+  if (existing) {
+    status.lastSync = existing.syncedAt || null;
     status.styleCount = existing.styles.length;
   }
-  const age = existing.syncedAt ? Date.now() - Date.parse(existing.syncedAt) : Infinity;
+  const age = existing?.syncedAt ? Date.now() - Date.parse(existing.syncedAt) : Infinity;
   if (age > 20 * 3600 * 1000) syncNow();
 
   const scheduleNext = () => {

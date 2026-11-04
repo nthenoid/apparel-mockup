@@ -311,14 +311,16 @@ function renderSource(cfg, cat) {
   const st = cfg.status || {};
   let text;
   if (cat.source !== 'ss') {
-    text = cfg.ssConfigured
-      ? st.state === 'error' ? `Showing sample garments. S&S sync failed: ${st.lastError}` : 'Showing sample garments while styles load from S&S. Reload in a few minutes.'
-      : 'Showing sample garments. Add your S&S account and API key to load real styles.';
+    if (!cfg.ssConfigured) text = 'Showing sample garments. Add your S&S account and API key to load real styles.';
+    else if (st.state === 'error') text = `Showing sample garments. S&S problem: ${st.lastError}`;
+    else if (st.state === 'syncing') text = 'Showing sample garments while your starting styles download from S&S.';
+    else text = 'Showing sample garments. Search under Style to add your first S&S style.';
   } else {
-    const when = cat.syncedAt ? new Date(cat.syncedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'unknown';
-    text = `S&S catalog, updated ${when}.`;
+    const n = cat.styles.length;
+    text = `${n} S&S style${n === 1 ? '' : 's'}.`;
+    if (cat.syncedAt) text += ` Refreshed ${new Date(cat.syncedAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}.`;
     if (st.unmatched?.length) text += ` Not found at S&S: ${st.unmatched.join(', ')}.`;
-    if (st.state === 'error') text += ` Last sync failed: ${st.lastError}`;
+    if (st.lastError) text += ` ${st.state === 'error' ? 'Last refresh failed: ' : ''}${st.lastError}`;
   }
   $('source').textContent = text;
 }
@@ -406,7 +408,109 @@ function selectStyle(id) {
   buildSizeSelects();
   if (!state.presetChosen) setPreset(DEFAULT_PRESET[garmentKind(s)]);
   if (state.view === 'back' && !currentColor().back) setPreset(DEFAULT_PRESET[garmentKind(s)]);
+  $('removeStyle').hidden = !s.id.startsWith('ss-');
   render();
+}
+
+// ---------- adding styles from S&S ----------
+
+async function refreshCatalog(selectId) {
+  const [cfg, cat] = await Promise.all([api('/api/config').then((r) => r.json()), api('/api/catalog').then((r) => r.json())]);
+  state.config = cfg;
+  state.styles = (cat.styles || []).filter((s) => s.colors?.length);
+  renderSource(cfg, cat);
+  buildStyleSelect();
+  const keep = [selectId, state.style?.id].find((id) => id && state.styles.some((s) => s.id === id));
+  if (keep || state.styles.length) selectStyle(keep || state.styles[0].id);
+}
+
+function resultButton(r) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'result';
+  const name = document.createElement('b');
+  name.textContent = `${r.brand} ${r.name}`;
+  const title = document.createElement('small');
+  title.textContent = r.title || '';
+  const tag = document.createElement('span');
+  tag.className = r.added ? 'tag done' : 'tag';
+  tag.textContent = r.added ? 'Added' : r.adding ? 'Adding…' : 'Add';
+  b.append(name, tag, title);
+  b.addEventListener('click', async () => {
+    if (r.added) return selectStyle(`ss-${r.styleID}`);
+    if (r.adding) return;
+    try {
+      showError('');
+      await api('/api/styles/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ styleID: r.styleID }) });
+      r.adding = true;
+      tag.textContent = 'Adding…';
+      pollJobs();
+    } catch (err) { showError(err.message); }
+  });
+  return b;
+}
+
+let searchTimer = 0;
+let searchSeq = 0;
+function onSearchInput() {
+  clearTimeout(searchTimer);
+  const q = $('styleSearch').value.trim();
+  const list = $('searchResults');
+  const note = $('searchNote');
+  if (q.length < 2) { list.hidden = true; note.hidden = true; return; }
+  searchTimer = setTimeout(async () => {
+    const seq = ++searchSeq;
+    note.hidden = false;
+    note.textContent = 'Searching S&S…';
+    try {
+      const { results } = await (await api(`/api/styles/search?q=${encodeURIComponent(q)}`)).json();
+      if (seq !== searchSeq) return;
+      list.replaceChildren(...results.map((r) => { const li = document.createElement('li'); li.append(resultButton(r)); return li; }));
+      list.hidden = !results.length;
+      note.textContent = results.length ? '' : 'No S&S styles match that. Try the brand and style number, like “Gildan 5000”.';
+      note.hidden = !!results.length;
+    } catch (err) {
+      if (seq === searchSeq) { list.hidden = true; note.textContent = err.message; }
+    }
+  }, 300);
+}
+
+let pollTimer = 0;
+let adding = new Set();
+async function pollJobs() {
+  clearTimeout(pollTimer);
+  let jobs;
+  try {
+    ({ jobs } = await (await api('/api/styles/jobs')).json());
+  } catch {
+    pollTimer = setTimeout(pollJobs, 5000);
+    return;
+  }
+  $('jobs').replaceChildren(...jobs.map((j) => {
+    const li = document.createElement('li');
+    if (j.state === 'error') { li.className = 'failed'; li.textContent = `Couldn’t add ${j.brand} ${j.name}. ${j.error}`; }
+    else li.textContent = `Adding ${j.brand} ${j.name}… downloading photos from S&S. This can take a minute or two.`;
+    return li;
+  }));
+  const now = new Set(jobs.filter((j) => j.state === 'adding').map((j) => j.styleID));
+  const finished = [...adding].filter((id) => !now.has(id) && !jobs.some((j) => j.styleID === id && j.state === 'error'));
+  adding = now;
+  if (finished.length) {
+    try { await refreshCatalog(`ss-${finished[finished.length - 1]}`); } catch (err) { showError(err.message); }
+    if ($('styleSearch').value.trim().length >= 2) onSearchInput();
+  }
+  if (now.size) pollTimer = setTimeout(pollJobs, 2000);
+}
+
+async function removeCurrentStyle() {
+  const s = state.style;
+  if (!s?.id.startsWith('ss-')) return;
+  if (!confirm(`Remove ${s.brand} ${s.name} from your styles? You can add it again any time.`)) return;
+  try {
+    await api('/api/styles/remove', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: s.id }) });
+    state.style = null;
+    await refreshCatalog();
+  } catch (err) { showError(err.message); }
 }
 
 // ---------- rendering ----------
@@ -662,6 +766,8 @@ function bind() {
   $('removeBg').addEventListener('change', () => { try { processArtwork(); render(); } catch (e) { showError(e.message); } });
 
   $('style').addEventListener('change', (e) => selectStyle(e.target.value));
+  $('styleSearch').addEventListener('input', onSearchInput);
+  $('removeStyle').addEventListener('click', removeCurrentStyle);
   document.querySelectorAll('[data-view]').forEach((b) => b.addEventListener('click', () => {
     if (b.dataset.view === state.view) return;
     setPreset(b.dataset.view === 'back' ? 'full-back' : DEFAULT_PRESET[garmentKind(state.style)], { chosen: true });
@@ -777,8 +883,10 @@ async function init() {
     buildPresetSelect();
     bind();
     $('w').value = fmt(state.widthIn);
+    $('ssAdd').hidden = !cfg.ssConfigured;
     if (state.styles.length) selectStyle(state.styles[0].id);
-    else showError('No garments are available yet. Check SS_STYLES in the container settings.');
+    else showError('No garments are available yet. Search under Style to add one.');
+    if (cfg.ssConfigured) pollJobs();
   } catch (e) {
     showError(e.message);
   }
