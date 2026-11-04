@@ -883,7 +883,14 @@ async function init() {
     buildPresetSelect();
     bind();
     $('w').value = fmt(state.widthIn);
-    $('ssAdd').hidden = !cfg.ssConfigured;
+    // Always visible so people know it exists; waits on the S&S key until it's set.
+    $('ssAdd').hidden = false;
+    if (!cfg.ssConfigured) {
+      $('styleSearch').disabled = true;
+      $('styleSearch').placeholder = 'Waiting for S&S to be connected';
+      $('searchNote').hidden = false;
+      $('searchNote').textContent = 'To search S&S styles, add your S&S account number and API key in the Unraid container settings.';
+    }
     if (state.styles.length) selectStyle(state.styles[0].id);
     else showError('No garments are available yet. Search under Style to add one.');
     if (cfg.ssConfigured) pollJobs();

@@ -50,7 +50,7 @@ test('a 10 inch print is 10 inches of the garment, and bigger on a smaller size'
   const onS = computeLayout({ ...base, selected: S });
   assert.ok(Math.abs(onL.rect.w - 200) < 3, `L width ${onL.rect.w}`);
   assert.ok(Math.abs(onS.rect.w / onL.rect.w - 22 / 18) < 0.01);
-  assert.ok(Math.abs(onL.rect.y - (150 + 6.25 * 20)) < 4);
+  assert.ok(Math.abs(onL.rect.y - (150 + 5.5 * 20)) < 4);
   assert.equal(onL.sizeIn.h, 5);
 });
 

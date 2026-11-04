@@ -15,8 +15,8 @@ export const PRESETS = {
 // maxBottomFrac: the print must end above this fraction of body length (hoodie pocket).
 export const RULES = {
   tee: {
-    'full-front': { top: 6.25, x: 0 },
-    'center-chest': { top: 6.25, x: 0 },
+    'full-front': { top: 5.5, x: 0 },
+    'center-chest': { top: 5.5, x: 0 },
     'left-chest': { top: 7, x: 4 },
     'full-back': { top: 4, x: 0 },
     'upper-back': { top: 2.5, x: 0 },
