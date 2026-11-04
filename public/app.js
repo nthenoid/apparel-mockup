@@ -599,6 +599,7 @@ async function render({ fast = false } = {}) {
 
   const canvas = $('shirt');
   if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
+  canvas.style.setProperty('--ratio', String(W / H));
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
   ctx.drawImage(img, 0, 0);

@@ -126,7 +126,9 @@ button, input, select { font: inherit; color: inherit; }
 .ruler { display: block; }
 .art { position: relative; grid-column: 2; grid-row: 2; line-height: 0; background: #fff; box-shadow: 0 1px 0 var(--rule); }
 .art:focus-visible { outline-offset: 4px; }
-#shirt { display: block; max-width: min(100%, calc(100vw - 420px)); max-height: calc(100vh - 210px); height: auto; width: auto; }
+/* Every photo fills the same space, whatever its pixel size: as tall as the
+   window allows (--ratio is the photo's width / height), no wider than the stage. */
+#shirt { display: block; width: calc((100vh - 210px) * var(--ratio, 1)); max-width: min(100%, calc(100vw - 420px)); height: auto; }
 #overlay { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
 
 .status { width: 100%; max-width: 760px; }
@@ -140,6 +142,6 @@ button, input, select { font: inherit; color: inherit; }
   .layout { grid-template-columns: 1fr; }
   .panel { border-right: 0; border-bottom: 1px solid var(--rule); }
   .stage { padding: 16px 8px; }
-  #shirt { max-width: calc(100vw - 52px); max-height: none; }
+  #shirt { width: calc(100vw - 52px); max-width: none; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
