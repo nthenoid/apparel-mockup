@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockups</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>Mockups</h1>
+    <p id="source" class="source"></p>
+    <button id="export" class="primary" type="button" disabled>Export PNG</button>
+  </header>
+
+  <main class="layout">
+    <aside class="panel">
+      <section class="group" aria-labelledby="h-art">
+        <h2 id="h-art">Artwork</h2>
+        <label class="drop" id="drop">
+          <input type="file" id="file" accept=".png,.jpg,.jpeg,.webp,.gif,.svg,.ai,.pdf,.eps">
+          <span id="dropText" class="drop-main">Drop a logo here or choose a file</span>
+          <span class="drop-sub">PNG, JPG, SVG, AI, PDF or EPS</span>
+        </label>
+        <p id="artInfo" class="info" hidden></p>
+        <label class="field" id="bgWrap" hidden><span>White background</span>
+          <select id="removeBg">
+            <option value="outer">Remove white around the artwork</option>
+            <option value="all">Remove all white, including inside letters</option>
+            <option value="keep">Keep white</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="group" aria-labelledby="h-garment">
+        <h2 id="h-garment">Garment</h2>
+        <label class="field"><span>Style</span><select id="style"></select></label>
+        <div class="field">
+          <span id="colorLabel">Color <b id="colorName"></b></span>
+          <div id="swatches" class="swatches" role="radiogroup" aria-labelledby="colorLabel"></div>
+        </div>
+        <div class="seg" role="group" aria-label="View">
+          <button type="button" data-view="front" aria-pressed="true">Front</button>
+          <button type="button" data-view="back" aria-pressed="false">Back</button>
+        </div>
+      </section>
+
+      <section class="group" aria-labelledby="h-print">
+        <h2 id="h-print">Print</h2>
+        <label class="field"><span>Placement</span><select id="preset"></select></label>
+        <div class="dims">
+          <label class="field"><span>Width (in)</span><input id="w" type="number" step="0.25" min="0.5" max="30" inputmode="decimal"></label>
+          <label class="field"><span>Height (in)</span><input id="h" type="number" step="0.25" min="0.5" max="30" inputmode="decimal"></label>
+        </div>
+        <label class="field"><span>Show on size</span><select id="size"></select></label>
+        <label class="field"><span>Photo shows size</span><select id="depicted"></select></label>
+      </section>
+
+      <section class="group" aria-labelledby="h-pos">
+        <h2 id="h-pos">Position</h2>
+        <p id="posInfo" class="info">Drag the logo or use the arrow keys to fine-tune it.</p>
+        <div class="row">
+          <button type="button" id="resetPos" disabled>Reset</button>
+          <button type="button" id="savePos" disabled>Save for this style</button>
+        </div>
+        <button type="button" id="clearSaved" class="link" hidden>Remove saved position</button>
+        <label class="check"><input type="checkbox" id="guides" checked> Show rulers and guides</label>
+      </section>
+    </aside>
+
+    <section class="stage" aria-label="Mockup preview">
+      <div class="frame" id="frame">
+        <span class="corner" aria-hidden="true">in</span>
+        <canvas id="rulerTop" class="ruler ruler-top" aria-hidden="true"></canvas>
+        <canvas id="rulerLeft" class="ruler ruler-left" aria-hidden="true"></canvas>
+        <div class="art" id="art" tabindex="0" aria-label="Mockup preview. Arrow keys move the logo.">
+          <canvas id="shirt"></canvas>
+          <canvas id="overlay"></canvas>
+        </div>
+      </div>
+      <div class="status">
+        <p id="readout" class="readout"></p>
+        <ul id="warnings" class="warnings"></ul>
+        <p id="error" class="error" role="alert" hidden></p>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

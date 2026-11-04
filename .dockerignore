@@ -1,0 +1,7 @@
+.git
+.github
+data
+test
+unraid
+*.md
+.env

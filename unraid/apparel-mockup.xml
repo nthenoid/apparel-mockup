@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>apparel-mockup</Name>
+  <Repository>ghcr.io/nthenoid/apparel-mockup:latest</Repository>
+  <Registry>https://github.com/nthenoid/apparel-mockup/pkgs/container/apparel-mockup</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Overview>In-house apparel mockup tool with automatic, true-to-size logo placement.</Overview>
+  <Category>Tools:</Category>
+  <WebUI></WebUI>
+  <ExtraParams>--user 99:100 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m --cap-drop=ALL --security-opt=no-new-privileges --memory=1g</ExtraParams>
+  <Config Name="Web port" Target="8080" Default="8080" Mode="tcp" Description="Port Cloudflare Tunnel connects to." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/data" Default="/mnt/user/appdata/apparel-mockup" Mode="rw" Description="Catalog, cached garment images and saved positions." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/apparel-mockup</Config>
+  <Config Name="Cloudflare team domain" Target="ACCESS_TEAM_DOMAIN" Default="" Description="Example: yourteam.cloudflareaccess.com" Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <Config Name="Cloudflare Access AUD tag" Target="ACCESS_AUD" Default="" Description="From the Access application's Overview page." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="S&amp;S account number" Target="SS_ACCOUNT" Default="" Description="Leave blank to use sample garments." Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <Config Name="S&amp;S API key" Target="SS_API_KEY" Default="" Description="From your S&amp;S account page." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="S&amp;S styles" Target="SS_STYLES" Default="Gildan 5000,Gildan 18500,BELLA+CANVAS 3001" Description="Comma-separated brand and style, or S&amp;S style IDs." Type="Variable" Display="always" Required="false" Mask="false">Gildan 5000,Gildan 18500,BELLA+CANVAS 3001</Config>
+  <Config Name="Nightly sync hour" Target="SYNC_HOUR" Default="2" Description="Hour of the day (0-23) to refresh S&amp;S data." Type="Variable" Display="advanced" Required="false" Mask="false">2</Config>
+  <Config Name="Max print width (in)" Target="MAX_PRINT_WIDTH_IN" Default="13" Type="Variable" Display="advanced" Required="false" Mask="false">13</Config>
+  <Config Name="Max print height (in)" Target="MAX_PRINT_HEIGHT_IN" Default="16" Type="Variable" Display="advanced" Required="false" Mask="false">16</Config>
+  <Config Name="Time zone" Target="TZ" Default="America/Denver" Type="Variable" Display="advanced" Required="false" Mask="false">America/Denver</Config>
+</Container>

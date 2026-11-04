@@ -1,0 +1,13 @@
+{
+  "name": "apparel-mockup",
+  "version": "1.0.0",
+  "private": true,
+  "description": "In-house apparel mockup tool with automatic, true-to-size logo placement.",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "DISABLE_ACCESS_CHECK=true DATA_DIR=./data node server/index.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": { "node": ">=22" }
+}
