@@ -1,6 +1,6 @@
 # Rebuilt weekly by GitHub Actions so the base system, Node and Ghostscript
 # pick up security patches automatically.
-FROM node:22-alpine
+FROM node:26-alpine
 
 RUN apk upgrade --no-cache && apk add --no-cache ghostscript tini
 
