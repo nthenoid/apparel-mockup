@@ -14,13 +14,24 @@ const STYLES = [
   { styleID: 77, partNumber: '01800', brandName: 'Gildan', styleName: '18500', title: 'Heavy Blend Hooded Sweatshirt', baseCategory: 'Fleece' },
   { styleID: 500, partNumber: '30010', brandName: 'BELLA + CANVAS', styleName: '3001', title: 'Unisex Jersey Tee', baseCategory: 'T-Shirts' },
   { styleID: 900, partNumber: '99000', brandName: 'Nophotos', styleName: 'X1', title: 'No images at all', baseCategory: 'T-Shirts' },
+  { styleID: 901, partNumber: '99001', brandName: 'Blocked', styleName: 'B1', title: 'Photos refused', baseCategory: 'T-Shirts' },
+  { styleID: 902, partNumber: '99002', brandName: 'Independent Trading Co.', styleName: 'IND4000', title: 'Heavyweight Hooded Sweatshirt', baseCategory: 'Fleece' },
 ];
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
 const hits = { products: 0, images: 0 };
 let rejectKey = false;
 
 function products(styleID) {
-  if (styleID === '900') return [{ styleID: 900, sizeName: 'M', colorName: 'Black', colorFrontImage: '' }];
+  if (styleID === '900') return [{ styleID: 900, sizeName: 'M', colorName: 'Black', colorFrontImage: '', colorOnModelFrontImage: 'Images/ModelColor/1_omf_fm.jpg' }];
+  if (styleID === '902') {
+    // Like real data can be: full URLs, spaces in names, a mislabeled photo type,
+    // an empty first row, and a stray row from another style.
+    return [
+      { styleID: 902, sizeName: 'S', sizeOrder: '1', colorName: 'Black Camo', colorFrontImage: '' },
+      { styleID: 902, sizeName: 'M', sizeOrder: '2', colorName: 'Black Camo', colorFrontImage: 'https://www.ssactivewear.com/Images/Color/odd type_f_fm.jpg' },
+      { styleID: 7, sizeName: 'M', sizeOrder: '2', colorName: 'Wrong Style', colorFrontImage: 'Images/Color/7_f_fm.jpg' },
+    ];
+  }
   const colors = [['Black', '#000000'], ['White', '#ffffff'], ['Navy', '#1f2a44']];
   const sizes = [['S', '1'], ['M', '2'], ['L', '3']];
   return colors.flatMap(([c, hex]) => sizes.map(([s, o]) => ({
@@ -36,12 +47,13 @@ const ss = http.createServer((req, res) => {
   const send = (body) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
   if (url.pathname.startsWith('/Images/')) {
     hits.images++;
-    res.writeHead(200, { 'Content-Type': 'image/png' });
+    if (url.pathname.includes('/901_')) { res.writeHead(403); return res.end(); }
+    res.writeHead(200, { 'Content-Type': url.pathname.includes('odd') ? 'application/octet-stream' : 'image/png' });
     return res.end(PNG);
   }
   if (rejectKey) { res.writeHead(401); return res.end(); }
   if (url.pathname === '/v2/styles/') return send(STYLES);
-  if (url.pathname === '/v2/products/') { hits.products++; return send(products(url.searchParams.get('style'))); }
+  if (url.pathname === '/v2/products/') { hits.products++; return send(url.searchParams.has('styleid') ? products(url.searchParams.get('styleid')) : []); }
   if (url.pathname === '/v2/specs/') {
     return send(['S', 'M', 'L'].flatMap((s, i) => [
       { sizeName: s, specName: 'Body Width', value: String(18 + 2 * i) },
@@ -102,8 +114,23 @@ test('a style with no photos reports an error instead of adding an empty style',
   await job.done;
   const [j] = listJobs();
   assert.equal(j.state, 'error');
-  assert.match(j.error, /no product photos/);
+  assert.match(j.error, /no flat front photos/);
   assert.ok(!(await ids()).includes('900'));
+});
+
+test('a style whose photos are refused says why', async () => {
+  await (await addStyle('901')).done;
+  const j = listJobs().find((x) => x.styleID === '901');
+  assert.match(j.error, /answered 403/);
+});
+
+test('unusual but real photo data still works', async () => {
+  await (await addStyle('902')).done;
+  const ind = (await getCatalog()).styles.find((s) => s.styleID === '902');
+  assert.ok(ind, listJobs().find((x) => x.styleID === '902')?.error);
+  assert.deepEqual(ind.colors.map((c) => c.name), ['Black Camo'], 'rows from other styles are ignored');
+  assert.match(ind.colors[0].front, /^\/img\/ss\/[A-Za-z0-9_.-]+$/, 'saved under a safe file name');
+  await removeStyle('ss-902');
 });
 
 test('bad requests are refused politely', async () => {

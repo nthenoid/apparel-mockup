@@ -187,13 +187,31 @@ async function getStyleIndex({ maxAgeMs = DAY } = {}) {
   return styleIndex.styles;
 }
 
-const SAFE_IMAGE = /^Images\/[A-Za-z0-9_./-]+\.(jpe?g|png)$/i;
+// S&S gives photo paths like "Images/Color/17130_f_fm.jpg" (sometimes a full
+// ssactivewear.com URL). Anything else is ignored.
+const SAFE_IMAGE = /^Images\/[A-Za-z0-9_ ./()+,'&-]+\.(jpe?g|png)$/i;
 
-async function cacheImage(rel) {
-  if (!rel || !SAFE_IMAGE.test(rel) || rel.includes('..')) return null;
+function imagePath(value) {
+  let rel = String(value || '').trim();
+  rel = rel.replace(/^https?:\/\/(www\.)?ssactivewear\.com\//i, '').replace(/^\/+/, '');
+  if (!SAFE_IMAGE.test(rel) || rel.includes('..')) return null;
+  return rel;
+}
+
+const looksLikeImage = (buf) =>
+  (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) || buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+// Downloads one photo (the large version when S&S has it) and returns its local
+// address. If it can't, the reason goes into `problems` so errors can say why.
+async function cacheImage(value, problems = []) {
+  const rel = imagePath(value);
+  if (!rel) {
+    if (value) problems.push(`unexpected photo address "${String(value).slice(0, 80)}"`);
+    return null;
+  }
   const candidates = [rel.replace(/_fm\.(jpe?g|png)$/i, '_fl.$1'), rel];
   for (const candidate of [...new Set(candidates)]) {
-    const file = path.basename(candidate);
+    const file = path.basename(candidate).replace(/[^A-Za-z0-9_.-]/g, '_');
     const local = path.join(imageDir(), file);
     try {
       const s = await stat(local);
@@ -202,16 +220,26 @@ async function cacheImage(rel) {
       /* not cached yet */
     }
     try {
-      const res = await fetch(`${config.ss.imageBase}/${candidate}`, { signal: AbortSignal.timeout(60_000) });
-      const type = res.headers.get('content-type') || '';
-      if (!res.ok || !type.startsWith('image/')) continue;
+      const res = await fetch(`${config.ss.imageBase}/${encodeURI(candidate)}`, { signal: AbortSignal.timeout(60_000) });
+      if (!res.ok) {
+        problems.push(`S&S answered ${res.status} for ${candidate}`);
+        continue;
+      }
       const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 15 * 1024 * 1024) continue;
+      if (buf.length > 15 * 1024 * 1024) {
+        problems.push(`${candidate} is over 15 MB`);
+        continue;
+      }
+      // Check the file itself; some servers label photos with the wrong type.
+      if (!looksLikeImage(buf)) {
+        problems.push(`${candidate} wasn’t a JPG or PNG (${res.headers.get('content-type') || 'no type'})`);
+        continue;
+      }
       await writeFile(`${local}.tmp`, buf);
       await rename(`${local}.tmp`, local);
       return `/img/ss/${file}`;
-    } catch {
-      /* try the next candidate */
+    } catch (err) {
+      problems.push(`couldn’t download ${candidate} (${err.message})`);
     }
   }
   return null;
@@ -232,29 +260,39 @@ async function mapLimit(items, limit, fn) {
 
 async function buildStyle(s) {
   await mkdir(imageDir(), { recursive: true });
-  const products = await ssGet(`/products/?style=${encodeURIComponent(s.styleID)}`);
+  // `styleid` is S&S's exact lookup. Their `style` filter also accepts part
+  // numbers and names, so a bare number can match the wrong thing.
+  const sameStyle = (row) => row?.styleID == null || String(row.styleID) === String(s.styleID);
+  const products = await ssGet(`/products/?styleid=${encodeURIComponent(s.styleID)}`);
+  const list = (Array.isArray(products) ? products : []).filter(sameStyle);
+  if (!list.length) throw new Error('S&S returned no products for this style. It may be discontinued.');
+
+  // Specs have no exact lookup, so ask by part number and keep only this style's rows.
   let specs = [];
   try {
-    specs = await ssGet(`/specs/?style=${encodeURIComponent(s.styleID)}`);
+    specs = await ssGet(`/specs/?style=${encodeURIComponent(s.partNumber || s.styleID)}`);
+    specs = (Array.isArray(specs) ? specs : []).filter(sameStyle);
   } catch (err) {
     if (err instanceof FatalSSError) throw err;
     specs = [];
   }
 
-  const list = Array.isArray(products) ? products : [];
   const sizeOrder = [...new Map(list.map((p) => [p.sizeName, p.sizeOrder || ''])).entries()]
     .sort((a, b) => String(a[1]).localeCompare(String(b[1])))
     .map(([n]) => n);
 
+  // One product per color, preferring one that has a front photo.
   const colors = new Map();
   for (const p of list) {
-    if (!p.colorName || colors.has(p.colorName)) continue;
-    colors.set(p.colorName, p);
+    if (!p.colorName) continue;
+    const have = colors.get(p.colorName);
+    if (!have || (!have.colorFrontImage && p.colorFrontImage)) colors.set(p.colorName, p);
   }
 
   // Several colors download at once so a big style finishes in a minute or two.
+  const problems = [];
   const built = await mapLimit([...colors.values()], 4, async (p) => {
-    const front = await cacheImage(p.colorFrontImage);
+    const front = await cacheImage(p.colorFrontImage, problems);
     if (!front) return null;
     return {
       name: p.colorName,
@@ -264,6 +302,14 @@ async function buildStyle(s) {
       back: await cacheImage(p.colorBackImage),
     };
   });
+
+  if (!built.some(Boolean)) {
+    const flatFronts = [...colors.values()].filter((p) => p.colorFrontImage).length;
+    const why = flatFronts
+      ? `None of its ${flatFronts} front photos could be downloaded: ${problems[0] || 'no reason given'}.`
+      : `S&S lists ${colors.size} colors but no flat front photos for them (only on-model photos, which can't be measured).`;
+    throw new Error(why);
+  }
 
   return {
     id: `ss-${s.styleID}`,
@@ -350,7 +396,6 @@ export async function addStyle(styleID) {
   Object.defineProperty(job, 'done', { enumerable: false, value: (async () => {
     try {
       const built = await buildStyle(s);
-      if (!built.colors.length) throw new Error('S&S has no product photos for this style.');
       await mutateCatalog((c) => {
         c.styles = c.styles.filter((x) => sid(x) !== id);
         c.styles.push(built);
