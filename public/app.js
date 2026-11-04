@@ -102,26 +102,29 @@ function measurePhoto(src) {
   });
 }
 
-// Close enough to the darkest color's shape that it's the same garment, just
-// framed a little differently, rather than a misreading of a pale photo.
-function plausible(own, ref) {
-  if (!ref.ok) return true;
-  const near = (a, b, tol) => Math.abs(a / b - 1) <= tol;
-  return near(own.bodyW, ref.bodyW, 0.3) && near(own.bottomY - own.topY, ref.bottomY - ref.topY, 0.3) && Math.abs(own.cx - ref.cx) <= 0.1;
-}
-
-// Each color is measured on its own photo, because S&S doesn't frame every
-// color the same way. Pale colors that can't be separated from a white
-// background borrow the darkest color's measurements instead.
-function getGeometry(style, view, color) {
-  return cached(`${style.id}:${view}:${color?.name}`, async () => {
+// Each style is measured once, on its darkest color, and every color uses that
+// measurement. S&S shoots every color of a style the same way, so this keeps
+// the print in the same spot on every color, and one "Save for this style"
+// correction fixes them all. (Measuring each color separately made hoodies
+// jump around, because arms hanging against the body read differently on
+// each photo.) If the darkest photo can't be measured, the next darkest is tried.
+function getGeometry(style, view) {
+  return cached(`${style.id}:${view}`, async () => {
     const candidates = style.colors.filter((c) => c[view]);
     if (!candidates.length) return { ok: false, reason: 'There’s no image for this view.' };
-    const darkest = [...candidates].sort((a, b) => luminance(a.hex) - luminance(b.hex))[0];
-    const ref = await measurePhoto(darkest[view]);
-    if (!color?.[view] || color === darkest) return ref;
-    const own = await measurePhoto(color[view]);
-    return own.ok && plausible(own, ref) ? own : ref;
+    const byDarkness = [...candidates].sort((a, b) => luminance(a.hex) - luminance(b.hex)).slice(0, 3);
+    let first;
+    for (const c of byDarkness) {
+      let g;
+      try {
+        g = await measurePhoto(c[view]);
+      } catch (err) {
+        g = { ok: false, reason: err.message };
+      }
+      first ||= g;
+      if (g.ok) return g;
+    }
+    return first;
   });
 }
 
@@ -560,7 +563,7 @@ async function render({ fast = false } = {}) {
     if (token === renderToken) $('readout').textContent = 'Loading this color’s photo from S&S…';
   }, 300);
   try {
-    [img, geoF] = await Promise.all([loadImage(src), getGeometry(s, state.view, color)]);
+    [img, geoF] = await Promise.all([loadImage(src), getGeometry(s, state.view)]);
   } catch (e) {
     return showError(e.message);
   } finally {

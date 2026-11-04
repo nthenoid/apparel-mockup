@@ -578,7 +578,10 @@ export async function startSyncSchedule() {
     status.styleCount = existing.styles.length;
   }
   const age = existing?.syncedAt ? Date.now() - Date.parse(existing.syncedAt) : Infinity;
-  if (age > 20 * 3600 * 1000) syncNow();
+  // Styles saved by an older version point at photos of mixed sizes; refreshing
+  // them right away moves every color onto the same large photos.
+  const oldFormat = existing?.styles.some((st) => st.colors?.some((c) => !c.src));
+  const first = age > 20 * 3600 * 1000 || oldFormat ? syncNow() : Promise.resolve();
 
   const scheduleNext = () => {
     const now = new Date();
@@ -588,7 +591,8 @@ export async function startSyncSchedule() {
     setTimeout(async () => {
       await syncNow();
       scheduleNext();
-    }, next - now);
+    }, next - now).unref?.();
   };
   scheduleNext();
+  return first;
 }
