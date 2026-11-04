@@ -82,24 +82,47 @@ function showError(msg) {
 // ---------- garment geometry ----------
 
 const geoCache = new Map();
-function getGeometry(style, view) {
-  const key = `${style.id}:${view}`;
+function cached(key, make) {
   if (!geoCache.has(key)) {
-    geoCache.set(key, (async () => {
-      const candidates = style.colors.filter((c) => c[view]);
-      if (!candidates.length) return { ok: false, reason: 'There’s no image for this view.' };
-      // Measure on the darkest color: it separates cleanly from a white background,
-      // and every color of a style is photographed the same way.
-      const darkest = [...candidates].sort((a, b) => luminance(a.hex) - luminance(b.hex))[0];
-      const im = await loadImage(darkest[view]);
-      const scale = Math.min(1, 700 / Math.max(im.naturalWidth, im.naturalHeight));
-      const c = makeCanvas(im.naturalWidth * scale, im.naturalHeight * scale);
-      const ctx = c.getContext('2d', { willReadFrequently: true });
-      ctx.drawImage(im, 0, 0, c.width, c.height);
-      return toFractions(analyzeGarment(ctx.getImageData(0, 0, c.width, c.height)));
-    })());
+    const p = make();
+    geoCache.set(key, p);
+    p.catch(() => geoCache.delete(key)); // a failed photo can be tried again
   }
   return geoCache.get(key);
+}
+
+function measurePhoto(src) {
+  return cached(`photo:${src}`, async () => {
+    const im = await loadImage(src);
+    const scale = Math.min(1, 700 / Math.max(im.naturalWidth, im.naturalHeight));
+    const c = makeCanvas(im.naturalWidth * scale, im.naturalHeight * scale);
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(im, 0, 0, c.width, c.height);
+    return toFractions(analyzeGarment(ctx.getImageData(0, 0, c.width, c.height)));
+  });
+}
+
+// Close enough to the darkest color's shape that it's the same garment, just
+// framed a little differently, rather than a misreading of a pale photo.
+function plausible(own, ref) {
+  if (!ref.ok) return true;
+  const near = (a, b, tol) => Math.abs(a / b - 1) <= tol;
+  return near(own.bodyW, ref.bodyW, 0.3) && near(own.bottomY - own.topY, ref.bottomY - ref.topY, 0.3) && Math.abs(own.cx - ref.cx) <= 0.1;
+}
+
+// Each color is measured on its own photo, because S&S doesn't frame every
+// color the same way. Pale colors that can't be separated from a white
+// background borrow the darkest color's measurements instead.
+function getGeometry(style, view, color) {
+  return cached(`${style.id}:${view}:${color?.name}`, async () => {
+    const candidates = style.colors.filter((c) => c[view]);
+    if (!candidates.length) return { ok: false, reason: 'There’s no image for this view.' };
+    const darkest = [...candidates].sort((a, b) => luminance(a.hex) - luminance(b.hex))[0];
+    const ref = await measurePhoto(darkest[view]);
+    if (!color?.[view] || color === darkest) return ref;
+    const own = await measurePhoto(color[view]);
+    return own.ok && plausible(own, ref) ? own : ref;
+  });
 }
 
 const pixelCache = new WeakMap();
@@ -537,7 +560,7 @@ async function render({ fast = false } = {}) {
     if (token === renderToken) $('readout').textContent = 'Loading this color’s photo from S&S…';
   }, 300);
   try {
-    [img, geoF] = await Promise.all([loadImage(src), getGeometry(s, state.view)]);
+    [img, geoF] = await Promise.all([loadImage(src), getGeometry(s, state.view, color)]);
   } catch (e) {
     return showError(e.message);
   } finally {
