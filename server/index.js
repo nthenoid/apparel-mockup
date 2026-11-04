@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config, assertConfig, ssEnabled } from './config.js';
 import { createAccessGuard } from './access.js';
-import { getCatalog, getStatus, startSyncSchedule, searchStyles, addStyle, removeStyle, listJobs } from './catalog.js';
+import { getCatalog, getStatus, startSyncSchedule, searchStyles, addStyle, removeStyle, listJobs, ensurePhoto } from './catalog.js';
 import { convertVector, UserError } from './convert.js';
 import { demoSvg } from './demo.js';
 import { readOverrides, applyOverride } from './overrides.js';
@@ -138,6 +138,11 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, svg, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' });
     }
 
+    if (req.method === 'GET' && p.startsWith('/img/ss/')) {
+      // Garment photos download from S&S the first time a color is picked.
+      if (!(await ensurePhoto(p.slice(8)))) return send(res, 404, 'Not found');
+      return serveFile(res, imagesRoot, p.slice(5), 'private, max-age=604800');
+    }
     if (req.method === 'GET' && p.startsWith('/img/')) return serveFile(res, imagesRoot, p.slice(5), 'private, max-age=604800');
 
     if (req.method === 'GET' || req.method === 'HEAD') return serveFile(res, publicDir, p === '/' ? 'index.html' : p.slice(1), 'no-cache');

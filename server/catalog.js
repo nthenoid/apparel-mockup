@@ -35,7 +35,10 @@ async function loadCatalog() {
   if (catalog) return catalog;
   try {
     const c = JSON.parse(await readFile(catalogFile(), 'utf8'));
-    if (c && Array.isArray(c.styles)) catalog = c;
+    if (c && Array.isArray(c.styles)) {
+      catalog = c;
+      indexPhotos(c);
+    }
   } catch {
     /* no catalog yet */
   }
@@ -51,6 +54,7 @@ function mutateCatalog(change) {
     next.styles.sort(byName);
     await writeJson(catalogFile(), next);
     catalog = next;
+    indexPhotos(next);
     status.styleCount = next.styles.length;
     return next;
   });
@@ -198,29 +202,82 @@ function imagePath(value) {
   return rel;
 }
 
+// S&S's website limits how fast photos can be downloaded. Every download shares
+// one pace: two at a time, spaced out, and when S&S answers 429 ("too many
+// requests") everyone waits, retries, and keeps a slower pace for a while.
+let photoGap = null; // current spacing between downloads, in ms
+let nextSlot = 0;
+let photosInFlight = 0;
+const photoWaiters = [];
+
+async function photoTurn() {
+  while (photosInFlight >= 2) await new Promise((r) => photoWaiters.push(r));
+  photosInFlight++;
+  const gap = photoGap ?? config.ss.photoGapMs;
+  const now = Date.now();
+  const wait = Math.max(0, nextSlot - now);
+  nextSlot = Math.max(now, nextSlot) + gap;
+  if (wait) await sleep(wait);
+}
+
+function photoDone() {
+  photosInFlight--;
+  photoWaiters.shift()?.();
+}
+
+async function fetchPhoto(url) {
+  for (let attempt = 0; ; attempt++) {
+    await photoTurn();
+    let res;
+    try {
+      res = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+    } finally {
+      photoDone();
+    }
+    if (res.status !== 429) {
+      if (res.ok && photoGap != null) photoGap = Math.max(config.ss.photoGapMs, photoGap * 0.97); // speed back up slowly
+      return res;
+    }
+    await res.arrayBuffer().catch(() => {});
+    if (attempt >= 5) return res;
+    const retryAfter = Number(res.headers.get('retry-after'));
+    const wait = retryAfter > 0 ? Math.min(retryAfter * 1000, 120_000) : config.ss.retryBaseMs * 2 ** attempt;
+    photoGap = Math.min(config.ss.photoGapMaxMs, Math.max(100, (photoGap ?? config.ss.photoGapMs) * 2));
+    nextSlot = Math.max(nextSlot, Date.now() + wait); // pause every download, not just this one
+  }
+}
+
 const looksLikeImage = (buf) =>
   (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) || buf.subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
 
-// Downloads one photo (the large version when S&S has it) and returns its local
-// address. If it can't, the reason goes into `problems` so errors can say why.
-async function cacheImage(value, problems = []) {
-  const rel = imagePath(value);
-  if (!rel) {
-    if (value) problems.push(`unexpected photo address "${String(value).slice(0, 80)}"`);
-    return null;
+// Photos are saved under their S&S medium-size ("_fm") file name, so each one
+// has a single address no matter which size actually downloaded.
+const photoFile = (rel) => path.basename(rel).replace(/[^A-Za-z0-9_.-]/g, '_');
+const photoUrl = (rel) => (rel ? `/img/ss/${photoFile(rel)}` : null);
+
+// Which S&S photo each local file name stands for, rebuilt whenever the library changes.
+let photoSources = new Map();
+function indexPhotos(c) {
+  const m = new Map();
+  for (const st of c?.styles || []) {
+    for (const col of st.colors || []) for (const rel of Object.values(col.src || {})) if (rel) m.set(photoFile(rel), rel);
   }
+  photoSources = m;
+}
+
+// Downloads one photo (the large version when S&S has it). If it can't, the
+// reason goes into `problems` so errors can say why.
+async function downloadPhoto(rel, problems = []) {
+  const local = path.join(imageDir(), photoFile(rel));
+  await mkdir(imageDir(), { recursive: true });
   const candidates = [rel.replace(/_fm\.(jpe?g|png)$/i, '_fl.$1'), rel];
   for (const candidate of [...new Set(candidates)]) {
-    const file = path.basename(candidate).replace(/[^A-Za-z0-9_.-]/g, '_');
-    const local = path.join(imageDir(), file);
     try {
-      const s = await stat(local);
-      if (Date.now() - s.mtimeMs < 30 * DAY) return `/img/ss/${file}`;
-    } catch {
-      /* not cached yet */
-    }
-    try {
-      const res = await fetch(`${config.ss.imageBase}/${encodeURI(candidate)}`, { signal: AbortSignal.timeout(60_000) });
+      const res = await fetchPhoto(`${config.ss.imageBase}/${encodeURI(candidate)}`);
+      if (res.status === 429) {
+        problems.push(`S&S kept answering 429 (too many requests) for ${candidate}, even after waiting`);
+        return false; // the smaller version would be refused too
+      }
       if (!res.ok) {
         problems.push(`S&S answered ${res.status} for ${candidate}`);
         continue;
@@ -237,29 +294,50 @@ async function cacheImage(value, problems = []) {
       }
       await writeFile(`${local}.tmp`, buf);
       await rename(`${local}.tmp`, local);
-      return `/img/ss/${file}`;
+      return true;
     } catch (err) {
       problems.push(`couldn’t download ${candidate} (${err.message})`);
     }
   }
-  return null;
+  return false;
 }
 
-async function mapLimit(items, limit, fn) {
-  const out = new Array(items.length);
-  let next = 0;
-  const worker = async () => {
-    while (next < items.length) {
-      const i = next++;
-      out[i] = await fn(items[i]);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
+const downloading = new Map();
+
+// Makes sure a photo is saved, downloading it from S&S the first time someone
+// picks that color. Returns false if it isn't one of your styles' photos or
+// S&S won't provide it.
+export async function ensurePhoto(file) {
+  if (!/^[A-Za-z0-9_.-]{1,200}$/.test(file)) return false;
+  try {
+    await stat(path.join(imageDir(), file));
+    return true;
+  } catch {
+    /* not saved yet */
+  }
+  await loadCatalog();
+  const rel = photoSources.get(file);
+  if (!rel) return false;
+  if (!downloading.has(file)) {
+    const problems = [];
+    downloading.set(file, downloadPhoto(rel, problems).then((ok) => {
+      if (!ok) console.error(`Couldn’t download ${rel}: ${problems[0] || 'no reason given'}`);
+      return ok;
+    }).finally(() => downloading.delete(file)));
+  }
+  return downloading.get(file);
 }
 
+function luminance(hex) {
+  if (!hex) return 128;
+  const n = parseInt(hex.slice(1), 16);
+  return 0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255);
+}
+
+// Reads a style's colors, sizes and photo addresses from S&S. Only the one
+// photo the tool measures the shirt on is downloaded now; every other photo
+// downloads the first time someone picks that color.
 async function buildStyle(s) {
-  await mkdir(imageDir(), { recursive: true });
   // `styleid` is S&S's exact lookup. Their `style` filter also accepts part
   // numbers and names, so a bare number can match the wrong thing.
   const sameStyle = (row) => row?.styleID == null || String(row.styleID) === String(s.styleID);
@@ -282,33 +360,35 @@ async function buildStyle(s) {
     .map(([n]) => n);
 
   // One product per color, preferring one that has a front photo.
-  const colors = new Map();
+  const byColor = new Map();
   for (const p of list) {
     if (!p.colorName) continue;
-    const have = colors.get(p.colorName);
-    if (!have || (!have.colorFrontImage && p.colorFrontImage)) colors.set(p.colorName, p);
+    const have = byColor.get(p.colorName);
+    if (!have || (!have.colorFrontImage && p.colorFrontImage)) byColor.set(p.colorName, p);
   }
 
-  // Several colors download at once so a big style finishes in a minute or two.
-  const problems = [];
-  const built = await mapLimit([...colors.values()], 4, async (p) => {
-    const front = await cacheImage(p.colorFrontImage, problems);
-    if (!front) return null;
-    return {
-      name: p.colorName,
-      hex: /^#[0-9a-f]{6}$/i.test(p.color1 || '') ? p.color1 : null,
-      swatch: await cacheImage(p.colorSwatchImage),
+  const colors = [];
+  for (const p of byColor.values()) {
+    const front = imagePath(p.colorFrontImage);
+    if (!front) continue;
+    const hex = /^#[0-9a-f]{6}$/i.test(p.color1 || '') ? p.color1 : null;
+    const src = {
       front,
-      back: await cacheImage(p.colorBackImage),
+      back: imagePath(p.colorBackImage),
+      swatch: hex ? null : imagePath(p.colorSwatchImage), // a plain color needs no swatch photo
     };
-  });
+    colors.push({ name: p.colorName, hex, front: photoUrl(src.front), back: photoUrl(src.back), swatch: photoUrl(src.swatch), src });
+  }
+  if (!colors.length) {
+    throw new Error(`S&S lists ${byColor.size} colors but no flat front photos for them (only on-model photos, which can't be measured).`);
+  }
 
-  if (!built.some(Boolean)) {
-    const flatFronts = [...colors.values()].filter((p) => p.colorFrontImage).length;
-    const why = flatFronts
-      ? `None of its ${flatFronts} front photos could be downloaded: ${problems[0] || 'no reason given'}.`
-      : `S&S lists ${colors.size} colors but no flat front photos for them (only on-model photos, which can't be measured).`;
-    throw new Error(why);
+  // The tool measures each style on its darkest color. Getting that photo now
+  // also proves S&S will hand over this style's photos.
+  const darkest = [...colors].sort((a, b) => luminance(a.hex) - luminance(b.hex))[0];
+  const problems = [];
+  if (!(await downloadPhoto(darkest.src.front, problems))) {
+    throw new Error(`Couldn’t download its photos from S&S: ${problems[0] || 'no reason given'}.`);
   }
 
   return {
@@ -321,7 +401,7 @@ async function buildStyle(s) {
     depictedSize: null, // the app assumes a default per garment type; override per style in the app
     sizes: specsToSizes(specs, sizeOrder),
     sizeNames: sizeOrder,
-    colors: built.filter(Boolean),
+    colors,
   };
 }
 

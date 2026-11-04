@@ -36,9 +36,9 @@ export const RULES = {
     'upper-back': { top: 5, x: 0 },
   },
   hoodie: {
-    'full-front': { top: 8, x: 0, maxBottomFrac: 0.5 },
-    'center-chest': { top: 8, x: 0, maxBottomFrac: 0.5 },
-    'left-chest': { top: 8.5, x: 4.5 },
+    'full-front': { top: 5, x: 0, maxBottomFrac: 0.6 },
+    'center-chest': { top: 5, x: 0, maxBottomFrac: 0.6 },
+    'left-chest': { top: 6, x: 4.5 },
     'full-back': { top: 7, x: 0 },
     'upper-back': { top: 4.5, x: 0 },
   },

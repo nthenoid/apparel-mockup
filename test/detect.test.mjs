@@ -67,7 +67,7 @@ test('warns about oversized prints and hoodie pockets', () => {
   const big = computeLayout({ geo: g, kind: 'tee', depicted: L, selected: S, preset: 'full-front', aspect: 1, widthIn: 17, limits });
   assert.equal(big.warnings.length, 2);
   const hood = { name: 'L', widthIn: 22, lengthIn: 28 };
-  const pocket = computeLayout({ geo: g, kind: 'hoodie', depicted: hood, selected: hood, preset: 'full-front', aspect: 1, widthIn: 10, limits });
+  const pocket = computeLayout({ geo: g, kind: 'hoodie', depicted: hood, selected: hood, preset: 'full-front', aspect: 1, widthIn: 13, limits });
   assert.ok(pocket.warnings.some((w) => w.includes('pocket')));
 });
 

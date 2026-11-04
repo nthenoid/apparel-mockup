@@ -15,6 +15,10 @@ export const config = {
     // or S&S style IDs. After that, add and remove styles from inside the tool.
     styles: (env.SS_STYLES || '').split(',').map((s) => s.trim()).filter(Boolean),
     requestGapMs: num(env.SS_REQUEST_GAP_MS, 1100),
+    // Photo downloads: spacing between them, and the first wait after a 429.
+    photoGapMs: num(env.SS_PHOTO_GAP_MS, 250),
+    retryBaseMs: num(env.SS_RETRY_BASE_MS, 5000),
+    photoGapMaxMs: num(env.SS_PHOTO_GAP_MAX_MS, 2000),
   },
   syncHour: Math.min(23, Math.max(0, num(env.SYNC_HOUR, 2))),
   access: {

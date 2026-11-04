@@ -489,7 +489,7 @@ async function pollJobs() {
   $('jobs').replaceChildren(...jobs.map((j) => {
     const li = document.createElement('li');
     if (j.state === 'error') { li.className = 'failed'; li.textContent = `Couldn’t add ${j.brand} ${j.name}. ${j.error}`; }
-    else li.textContent = `Adding ${j.brand} ${j.name}… downloading photos from S&S. This can take a minute or two.`;
+    else li.textContent = `Adding ${j.brand} ${j.name}… getting its colors and sizes from S&S.`;
     return li;
   }));
   const now = new Set(jobs.filter((j) => j.state === 'adding').map((j) => j.styleID));
@@ -532,10 +532,16 @@ async function render({ fast = false } = {}) {
   if (!src) return showError('This color doesn’t have an image for this view.');
 
   let img, geoF;
+  // A color picked for the first time downloads from S&S, which takes a moment.
+  const slow = setTimeout(() => {
+    if (token === renderToken) $('readout').textContent = 'Loading this color’s photo from S&S…';
+  }, 300);
   try {
     [img, geoF] = await Promise.all([loadImage(src), getGeometry(s, state.view)]);
   } catch (e) {
     return showError(e.message);
+  } finally {
+    clearTimeout(slow);
   }
   if (token !== renderToken) return;
 

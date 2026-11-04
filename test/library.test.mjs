@@ -6,7 +6,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { config } from '../server/config.js';
-import { searchStyles, addStyle, removeStyle, listJobs, getCatalog, syncNow, getStatus } from '../server/catalog.js';
+import { searchStyles, addStyle, removeStyle, listJobs, getCatalog, syncNow, getStatus, ensurePhoto } from '../server/catalog.js';
 
 const STYLES = [
   { styleID: 39, partNumber: '00760', brandName: 'Gildan', styleName: '5000', title: 'Heavy Cotton T-Shirt', baseCategory: 'T-Shirts' },
@@ -15,10 +15,13 @@ const STYLES = [
   { styleID: 500, partNumber: '30010', brandName: 'BELLA + CANVAS', styleName: '3001', title: 'Unisex Jersey Tee', baseCategory: 'T-Shirts' },
   { styleID: 900, partNumber: '99000', brandName: 'Nophotos', styleName: 'X1', title: 'No images at all', baseCategory: 'T-Shirts' },
   { styleID: 901, partNumber: '99001', brandName: 'Blocked', styleName: 'B1', title: 'Photos refused', baseCategory: 'T-Shirts' },
+  { styleID: 903, partNumber: '99003', brandName: 'Next Level', styleName: '6210', title: 'Unisex CVC Tee', baseCategory: 'T-Shirts' },
+  { styleID: 904, partNumber: '99004', brandName: 'Always', styleName: 'Busy', title: 'Never stops refusing', baseCategory: 'T-Shirts' },
   { styleID: 902, partNumber: '99002', brandName: 'Independent Trading Co.', styleName: 'IND4000', title: 'Heavyweight Hooded Sweatshirt', baseCategory: 'Fleece' },
 ];
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64');
-const hits = { products: 0, images: 0 };
+const hits = { products: 0, images: 0, busy: 0, maxAtOnce: 0 };
+let photosNow = 0;
 let rejectKey = false;
 
 function products(styleID) {
@@ -48,6 +51,12 @@ const ss = http.createServer((req, res) => {
   if (url.pathname.startsWith('/Images/')) {
     hits.images++;
     if (url.pathname.includes('/901_')) { res.writeHead(403); return res.end(); }
+    if (url.pathname.includes('/904_')) { res.writeHead(429); return res.end(); }
+    // Style 903: S&S says "too many requests" to the first 5 photo downloads.
+    if (url.pathname.includes('/903_') && hits.busy < 5) { hits.busy++; res.writeHead(429, { 'Retry-After': '0' }); return res.end(); }
+    photosNow++;
+    hits.maxAtOnce = Math.max(hits.maxAtOnce, photosNow);
+    res.on('finish', () => photosNow--);
     res.writeHead(200, { 'Content-Type': url.pathname.includes('odd') ? 'application/octet-stream' : 'image/png' });
     return res.end(PNG);
   }
@@ -67,7 +76,7 @@ const base = `http://127.0.0.1:${ss.address().port}`;
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'mockup-lib-'));
 Object.assign(config, { dataDir: tmp });
-Object.assign(config.ss, { account: '123', apiKey: 'key', apiBase: `${base}/v2`, imageBase: base, requestGapMs: 0, styles: ['Gildan 18500', 'Made Up 123'] });
+Object.assign(config.ss, { account: '123', apiKey: 'key', apiBase: `${base}/v2`, imageBase: base, requestGapMs: 0, photoGapMs: 0, retryBaseMs: 5, photoGapMaxMs: 20, styles: ['Gildan 18500', 'Made Up 123'] });
 
 test.after(async () => { ss.close(); await rm(tmp, { recursive: true, force: true }); });
 
@@ -91,22 +100,40 @@ test('search finds styles by brand and number, best match first', async () => {
   assert.deepEqual(await searchStyles(' '), []);
 });
 
-test('adding a style downloads it once and keeps it', async () => {
+test('adding a style is quick: only the photo it measures on downloads', async () => {
+  const before = hits.images;
   const job = await addStyle('39');
   assert.equal(job.state, 'adding');
   assert.equal(JSON.parse(JSON.stringify(job)).done, undefined, 'internal promise is not sent to the browser');
   assert.equal((await addStyle('39')).state, 'adding', 'clicking twice does not start a second download');
   await job.done;
   assert.deepEqual(listJobs(), []);
-  assert.deepEqual(await ids(), ['77', '39'].sort((a, b) => (a === '77' ? 1 : -1)));
+  assert.deepEqual((await ids()).sort(), ['39', '77']);
   const tee = (await getCatalog()).styles.find((s) => s.styleID === '39');
   assert.equal(tee.brand, 'Gildan');
   assert.equal(tee.colors.length, 3);
-  assert.ok(tee.colors.every((c) => c.front && c.back && c.swatch));
-  const files = await readdir(path.join(tmp, 'images', 'ss'));
-  assert.ok(files.includes('39_Black_fl.jpg'), 'photos are saved on the server');
+  assert.ok(tee.colors.every((c) => c.front && c.back), 'every color has photo addresses');
+  assert.ok(tee.colors.every((c) => c.hex && !c.swatch), 'plain colors use their color code, not a swatch photo');
+  assert.equal(hits.images - before, 1, 'one photo downloaded');
+  assert.deepEqual(await readdir(path.join(tmp, 'images', 'ss')).then((f) => f.filter((x) => x.startsWith('39_'))), ['39_Black_fm.jpg'], 'the darkest color, saved');
   const onDisk = JSON.parse(await readFile(path.join(tmp, 'catalog.json'), 'utf8'));
   assert.ok(onDisk.styles.some((s) => s.styleID === '39'), 'library survives a restart');
+});
+
+test('other colors download the first time they are picked, then come from the server', async () => {
+  const navy = (await getCatalog()).styles.find((s) => s.styleID === '39').colors.find((c) => c.name === 'Navy');
+  const file = navy.front.replace('/img/ss/', '');
+  const before = hits.images;
+  assert.equal(await ensurePhoto(file), true);
+  assert.equal(await ensurePhoto(file), true);
+  assert.equal(hits.images - before, 1, 'downloaded once');
+  assert.ok((await readdir(path.join(tmp, 'images', 'ss'))).includes(file));
+});
+
+test('only photos of your own styles can be fetched', async () => {
+  assert.equal(await ensurePhoto('41_Black_fm.jpg'), false, 'a style you have not added');
+  assert.equal(await ensurePhoto('../catalog.json'), false);
+  assert.equal(await ensurePhoto(''), false);
 });
 
 test('a style with no photos reports an error instead of adding an empty style', async () => {
@@ -131,6 +158,24 @@ test('unusual but real photo data still works', async () => {
   assert.deepEqual(ind.colors.map((c) => c.name), ['Black Camo'], 'rows from other styles are ignored');
   assert.match(ind.colors[0].front, /^\/img\/ss\/[A-Za-z0-9_.-]+$/, 'saved under a safe file name');
   await removeStyle('ss-902');
+});
+
+test('when S&S says "too many requests", downloads wait and retry', async () => {
+  await (await addStyle('903')).done;
+  const tee = (await getCatalog()).styles.find((s) => s.styleID === '903');
+  assert.ok(tee, listJobs().find((x) => x.styleID === '903')?.error);
+  // Pick every color at once, the way a busy afternoon might.
+  const files = tee.colors.flatMap((c) => [c.front, c.back]).map((u) => u.replace('/img/ss/', ''));
+  const results = await Promise.all(files.map((f) => ensurePhoto(f)));
+  assert.ok(results.every(Boolean), 'every photo arrived after retrying');
+  assert.equal(hits.busy, 5, 'S&S refused 5 times along the way');
+  assert.ok(hits.maxAtOnce <= 2, `at most 2 photos at a time (saw ${hits.maxAtOnce})`);
+  await removeStyle('ss-903');
+});
+
+test('if S&S never stops refusing, the error says so', async () => {
+  await (await addStyle('904')).done;
+  assert.match(listJobs().find((x) => x.styleID === '904').error, /kept answering 429/);
 });
 
 test('bad requests are refused politely', async () => {
